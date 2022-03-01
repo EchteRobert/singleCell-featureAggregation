@@ -16,11 +16,35 @@ import seaborn as sns
 # Umap
 import umap
 import umap.plot
-import colorcet as cc
 
+import os
 
 def now():
     return str(datetime.datetime.now())+': '
+
+def addDataPathsToMetadata(rootDir, metadata, platePaths):
+    if not isinstance(platePaths, list):
+        platePaths = [platePaths]
+    for i, path in enumerate(platePaths):
+        platedir = os.path.join(rootDir, path)
+        filenames = [os.path.join(platedir, file) for file in os.listdir(platedir)]
+        filenames.sort()
+        metadata[f'plate{i+1}'] = filenames
+
+    return metadata
+
+
+
+def my_collate_eval(batch):
+    data = [item[0] for item in batch]
+    data = torch.cat(data, dim=0)
+    target = [item[1] for item in batch]
+    target = torch.cat(target, dim=0)
+    aggregated_data = [item[2] for item in batch]
+    aggregated_data = torch.cat(aggregated_data, dim=0)
+    agg_target = [item[3] for item in batch]
+    agg_target = torch.cat(agg_target, dim=0)
+    return [data, target, aggregated_data, agg_target]
 
 def my_collate(batch):
     data = [item[0] for item in batch]
@@ -29,18 +53,25 @@ def my_collate(batch):
     target = torch.cat(target, dim=0)
     return [data, target]
 
-def train_val_split(metadata_df, Tsplit=0.8):
-    df = metadata_df[['labels', 'plate1']]
-    df = pd.concat([df.rename(columns={'plate1': 'plate2'}), metadata_df[['labels', 'plate2']]])
-    df = pd.concat([df.rename(columns={'plate2': 'plate3'}), metadata_df[['labels', 'plate3']]])
-    df = pd.concat([df.rename(columns={'plate3': 'plate4'}), metadata_df[['labels', 'plate4']]])
-    df = df.rename(columns={'plate4': 'well_path'})
+def train_val_split(metadata_df, Tsplit=0.8, sort=True):
+    df = pd.DataFrame()
+    plate_columns = [c for c in metadata_df.columns if c.startswith("plate")]
+    if len(plate_columns) < 1:
+        raise Warning("Could not find any plate columns in metadata_df.")
+    for i, plate in enumerate(plate_columns):
+        df = pd.concat([df, metadata_df[['Metadata_labels', plate]] ])
+        if i < len(plate_columns)-1:
+            df = df.rename(columns={plate: plate_columns[i+1]})
+
+    df = df.rename(columns={plate_columns[i]: 'well_path'})
 
     split = int(len(df.index)*Tsplit)
+    if sort:
+        df = df.sort_values(by='Metadata_labels')
 
     return [df.iloc[:split, :].reset_index(drop=True), df.iloc[split:, :].reset_index(drop=True)]
 
-def filterData(df, filter, encode=None, mode='default'):
+def filterData(df, filter, encode=None, sort=True, mode='default'):
     if 'negcon' in filter: # drop all negcon wells
         if mode == 'default':
             df = df[df.control_type != 'negcon']
@@ -48,22 +79,23 @@ def filterData(df, filter, encode=None, mode='default'):
             df = df[df.Metadata_control_type != 'negcon']
         df = df.reset_index(drop=True)
     if encode!=None:
-        if mode=='default':
-            pd.options.mode.chained_assignment = None  # default='warn'
-            obj_df = df[encode].astype('category')
-            df['labels'] = obj_df.cat.codes
-            df = df.sort_values(by='labels')
-            df = df.reset_index(drop=True)
-        elif mode == 'eval':
-            pd.options.mode.chained_assignment = None  # default='warn'
-            obj_df = df[encode].astype('category')
-            df['Metadata_labels'] = obj_df.cat.codes
+        pd.options.mode.chained_assignment = None  # default='warn'
+        obj_df = df[encode].astype('category')
+        df['Metadata_labels'] = obj_df.cat.codes
+        if sort:
             df = df.sort_values(by='Metadata_labels')
-            df = df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
+
     return df
 
 
-
+def featureSelection(features, bestk = 800):
+    features_df = pd.DataFrame(features)
+    pcorr = features_df.corr()
+    avcorr = np.array(pcorr.mean(axis=1))
+    sort_index = np.argsort(abs(avcorr))
+    bestindices = sort_index[:bestk]
+    return features[:, bestindices]
 
 
 #######################
